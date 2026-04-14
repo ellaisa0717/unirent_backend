@@ -1,5 +1,5 @@
 from django.db import models
-from django.contrib.auth.models import User # Required to link items to students
+from django.contrib.auth.models import User 
 
 class Item(models.Model):
     title = models.CharField(max_length=255) 
@@ -9,10 +9,9 @@ class Item(models.Model):
     status = models.CharField(max_length=50, default='Available')
     locker_label = models.CharField(max_length=50) 
     
-    # Updated: Links the item to a specific User (Student)
+   # Updated: Links the item to a specific User (Student) 
     owner = models.ForeignKey(User, on_delete=models.CASCADE, related_name='items') 
     
-    # New: Moderation field for Admin approval
     is_approved = models.BooleanField(default=False) 
     
     rating = models.FloatField(default=0.0)
