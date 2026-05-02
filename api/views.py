@@ -4,6 +4,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from .models import Item
 from .serializers import ItemSerializer
+from rest_framework.authtoken.models import Token
 
 @api_view(['GET', 'POST'])
 def item_list(request):
@@ -30,3 +31,22 @@ def register_user(request):
         return Response({"message": "User registered successfully"}, status=status.HTTP_201_CREATED)
     except Exception as e:
         return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+@api_view(['POST'])
+def login_user(request):
+    username = request.data.get('username')
+    password = request.data.get('password')
+    
+    # Check if the user exists and the password matches
+    user = authenticate(username=username, password=password)
+    
+    if user is not None:
+        # Generate or retrieve the token for this user
+        token, created = Token.objects.get_or_create(user=user)
+        return Response({
+            "token": token.key, 
+            "message": "Login successful"
+        }, status=status.HTTP_200_OK)
+    else:
+        return Response({"error": "Invalid credentials."}, status=status.HTTP_400_BAD_REQUEST)
