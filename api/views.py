@@ -108,13 +108,18 @@ def user_profile(request):
 @permission_classes([IsAuthenticated])
 def checkout(request):
     user = request.user
-    item_ids = request.data.get('item_ids', []) 
+    item_ids = request.data.get('item_ids', [])
+    # NEW: Catch the locker the user selected
+    chosen_locker = request.data.get('locker_id') 
     
-    if not item_ids:
-        return Response({"error": "Cart is empty"}, status=status.HTTP_400_BAD_REQUEST)
+    if not item_ids or not chosen_locker:
+        return Response({"error": "Missing items or locker selection."}, status=status.HTTP_400_BAD_REQUEST)
+
+    # SECURITY: Check if that specific locker is already occupied by another active item
+    if Item.objects.filter(locker_label=chosen_locker, status='Occupied').exists():
+        return Response({"error": f"Locker {chosen_locker} is already in use! Please pick another."}, status=status.HTTP_400_BAD_REQUEST)
 
     return_date = timezone.now() + timedelta(days=3)
-    
     successful_rentals = 0
 
     for item_id in item_ids:
@@ -124,6 +129,7 @@ def checkout(request):
             if item.status == 'Occupied':
                 continue 
             
+            # 1. Create the Transaction
             RentalTransaction.objects.create(
                 user=user,
                 item=item,
@@ -131,7 +137,9 @@ def checkout(request):
                 total_price=item.price 
             )
             
+            # 2. Update the Item with the CHOSEN locker
             item.status = 'Occupied'
+            item.locker_label = chosen_locker 
             item.save()
             successful_rentals += 1
             
@@ -139,7 +147,7 @@ def checkout(request):
             continue
             
     if successful_rentals > 0:
-        return Response({"message": f"Successfully processed {successful_rentals} items!"}, status=status.HTTP_200_OK)
+        return Response({"message": "Checkout successful!"}, status=status.HTTP_200_OK)
     else:
         return Response({"error": "Items are no longer available."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -147,19 +155,93 @@ def checkout(request):
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])
 def my_rentals(request):
-    # Find all transactions belonging to the user who made the request
     rentals = RentalTransaction.objects.filter(user=request.user).order_by('-rental_date')
     
-    # Manually serialize the data so we can format it perfectly for the Dashboard
     data = []
     for r in rentals:
+        # Check if it was returned!
+        if r.is_returned:
+            status_label = "Returned"
+        else:
+            status_label = "Active" if r.return_date > timezone.now() else "Overdue"
+
         data.append({
             "id": r.id,
             "item_title": r.item.title,
-            "locker_label": r.item.locker_label,
+            "locker_label": r.item.locker_label or "N/A", # Prevents errors if locker is empty
             "rental_date": r.rental_date.strftime("%b %d, %I:%M %p"),
             "return_date": r.return_date.strftime("%b %d, %Y"),
-            "status": "Active" if r.return_date > timezone.now() else "Overdue"
+            "status": status_label
         })
         
     return Response(data, status=status.HTTP_200_OK)
+
+
+@api_view(['PUT'])
+@permission_classes([IsAuthenticated])
+def update_profile(request):
+    user = request.user
+    data = request.data
+
+    try:
+        # 1. Update Username (Student ID)
+        new_username = data.get('username')
+        if new_username and new_username != user.username:
+            # Check if someone else is already using this ID
+            if User.objects.filter(username=new_username).exists():
+                return Response({"error": "That Student ID is already taken!"}, status=status.HTTP_400_BAD_REQUEST)
+            user.username = new_username
+
+        # 2. Update Full Name (Split into First and Last)
+        new_full_name = data.get('full_name')
+        if new_full_name:
+            raw_full_name = new_full_name.strip()
+            if ' ' in raw_full_name:
+                first, last = raw_full_name.split(' ', 1)
+                user.first_name = first
+                user.last_name = last
+            else:
+                user.first_name = raw_full_name
+                user.last_name = ""
+
+        # 3. Update Password
+        new_password = data.get('password')
+        if new_password:
+            user.set_password(new_password) # This automatically encrypts it!
+
+        user.save()
+
+        return Response({
+            "message": "Profile updated successfully!",
+            "username": user.username,
+            "full_name": user.get_full_name().strip() or user.username,
+        }, status=status.HTTP_200_OK)
+
+    except Exception as e:
+        return Response({"error": str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def return_item(request):
+    rental_id = request.data.get('rental_id')
+    try:
+        # 1. Find the active transaction
+        transaction = RentalTransaction.objects.get(id=rental_id, user=request.user)
+        
+        if transaction.is_returned:
+            return Response({"error": "Item is already returned!"}, status=status.HTTP_400_BAD_REQUEST)
+            
+        item = transaction.item
+        
+        # 2. Free up the item and locker for the next user!
+        item.status = 'Available'
+        item.locker_label = None 
+        item.save()
+        
+        # 3. Mark the transaction as complete
+        transaction.is_returned = True
+        transaction.save()
+        
+        return Response({"message": "Item returned successfully!"}, status=status.HTTP_200_OK)
+    except RentalTransaction.DoesNotExist:
+        return Response({"error": "Rental not found."}, status=status.HTTP_404_NOT_FOUND)
